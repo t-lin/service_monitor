@@ -105,7 +105,9 @@ func get_request(url string, token string, url_type string) ([]byte, string) {
 		Timeout: 2 * time.Second, // Cause I don't have the patience
 	}
 
-	req, _ := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequest("GET", url, nil)
+	check(err)
+
 	req.Header.Add("X-Auth-Token", token)
 	resp, err := client.Do(req)
 
@@ -174,11 +176,11 @@ func service_status(url string, token string, tenant_id string) (string, string)
 
 	In the end, we can get the description of that specific endpoint url
 */
-func get_service_map(services []byte) map[string][]string {
+func get_service_map(services []byte) map[string]string {
 
 	var SERVICE_JSON_OBJECT = get_config_val("SERVICE_JSON_OBJECT")
 	// Initialize the string map
-	service_map := make(map[string][]string)
+	service_map := make(map[string]string)
 
 	// Loop through each row of the service-list output
 	jsonparser.ArrayEach(services, func(value []byte, dataType jsonparser.ValueType, offset int, err error) {
@@ -191,8 +193,8 @@ func get_service_map(services []byte) map[string][]string {
 		service_description, err := jsonparser.GetString(value, "description")
 		check(err)
 
-		// Append to map
-		service_map[service_id] = append(service_map[service_id], service_description)
+		// Create entry in map
+		service_map[service_id] = service_description
 
 	}, SERVICE_JSON_OBJECT)
 
@@ -240,7 +242,7 @@ func execute_code(tenant string) {
 		// Get the status, given the publicurl, token and tenant_id
 		used_url, status := service_status(url, token, tenant_id)
 
-		fmt.Printf("%10s | %15s | %25s | %90s | %-10s \n", tenant, region, services_map[service_id][0], used_url, status)
+		fmt.Printf("%10s | %15s | %25s | %90s | %-10s \n", tenant, region, services_map[service_id], used_url, status)
 
 	}, "endpoints")
 }
