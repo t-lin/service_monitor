@@ -9,6 +9,7 @@ import (
 	"io/ioutil"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -27,34 +28,70 @@ type AuthHeader struct {
 
 /* ---------------------------------------------------------------------------------------- */
 
-//Generic function to check for any errors
-func check(e error) {
+// Generic function to check for any errors
+func checkErr(e error) {
 	if e != nil {
 		panic(e)
 		return
 	}
 }
 
-//Generic function that reads the config.ini file for certain key and returns the value
+/*
+ * Singleton access to config file by loading only once
+ * Avoids repeatedly opening/accessing file each time, and
+ * potentially by multiple goroutines
+ */
+var g_CFG *ini.File // Ideally this should be const... but then can't assign
+var once sync.Once
+
+func get_config_file() *ini.File {
+	once.Do(func() {
+		cfg, err := ini.Load("config.ini") // TODO: Non-hardcoded filename
+		if err != nil {
+			fmt.Printf("ERROR: Unable to load configuration file %s\n", "config.ini")
+			panic(err)
+		}
+		g_CFG = cfg
+	})
+
+	return g_CFG
+}
+
+// Generic function that reads the config.ini file for certain key and returns the value
 func get_config_val(key string) string {
 
-	//Load config.ini file
-	cfg, err := ini.Load("config.ini")
-	check(err)
+	config := get_config_file()
 
 	// Load section
-	sec, err := cfg.GetSection("config")
-	check(err)
+	sec, err := config.GetSection("config")
+	checkErr(err)
 
 	// Get key under "config" section
 	value, err := sec.GetKey(key)
-	check(err)
+	checkErr(err)
 
 	return value.String()
 }
 
-//Function to fetch Token and Tenant ID given admin auth information
-//Returns token and tenant_id
+// Like get_config_val() but returns keys that hold comma-separated list of values
+// e.g. If config file has: MYKEY = val-1, val-2, val-3
+//      This function would return array of strings: ["val-1", "val-2", "val-3"]
+func get_config_list(key string) []string {
+	config := get_config_file()
+
+	// Load section
+	sec, err := config.GetSection("config")
+	checkErr(err)
+
+	// Get key under "config" section
+	value, err := sec.GetKey(key)
+	checkErr(err)
+
+	return value.Strings(",")
+}
+
+// Function to fetch Token and Tenant ID given admin auth information
+// Returns token and tenant_id
 func get_info(tenant string) (string, string) {
 
 	// Load config variables
@@ -75,19 +112,19 @@ func get_info(tenant string) (string, string) {
 
 	// Make the POST call
 	resp, err := http.Post(KEYSTONE_GET_TOKEN_URL, CONTENT_TYPE, auth_bytes)
-	check(err)
+	checkErr(err)
 
 	// Store it as string
 	body, err := ioutil.ReadAll(resp.Body)
-	check(err)
+	checkErr(err)
 
 	// Get token
 	token, err := jsonparser.GetString(body, "access", "token", "id")
-	check(err)
+	checkErr(err)
 
 	// Get Tenant ID
 	tenant_id, err := jsonparser.GetString(body, "access", "token", "tenant", "id")
-	check(err)
+	checkErr(err)
 
 	defer resp.Body.Close()
 
@@ -106,14 +143,14 @@ func get_request(url string, token string, url_type string) ([]byte, string) {
 	}
 
 	req, err := http.NewRequest("GET", url, nil)
-	check(err)
+	checkErr(err)
 
 	req.Header.Add("X-Auth-Token", token)
 	resp, err := client.Do(req)
 
 	//If the request was to fetch endpoint list or service list, check for errors
 	if url_type == "list" {
-		check(err)
+		checkErr(err)
 	} else {
 		// Handle error differently for this case.
 		// You don't want to panic and shutdown for a connection timeout
@@ -187,11 +224,11 @@ func get_service_map(services []byte) map[string]string {
 
 		// Get the service_id
 		service_id, err := jsonparser.GetString(value, "id")
-		check(err)
+		checkErr(err)
 
 		// Get the service description
 		service_description, err := jsonparser.GetString(value, "description")
-		check(err)
+		checkErr(err)
 
 		// Create entry in map
 		service_map[service_id] = service_description
@@ -208,11 +245,18 @@ func execute_code(tenant string) {
 	//Load config values
 	var KEYSTONE_GET_ENDPOINT_URL = get_config_val("KEYSTONE_GET_ENDPOINT_URL")
 	var KEYSTONE_GET_SERVICE_URL = get_config_val("KEYSTONE_GET_SERVICE_URL")
+	var REGIONS = get_config_list("REGIONS")
+
+	// Construct map object for list of regions, enables quick membership check
+	var inRegionsList = make(map[string]bool)
+	for _, reg := range REGIONS {
+		inRegionsList[reg] = true
+	}
 
 	// Get token and tenant_id, given the tenant name
 	token, tenant_id := get_info(tenant)
 
-	//Get output of keystone endpoint-list. Don't care about the status of this call
+	// Get output of keystone endpoint-list. Don't care about the status of this call
 	endpoints, _ := get_request(KEYSTONE_GET_ENDPOINT_URL, token, "list")
 
 	// Get output of keystone service-list. Don't care about the status of this call
@@ -227,17 +271,22 @@ func execute_code(tenant string) {
 	// Loop through each row of endpoint-list output
 	jsonparser.ArrayEach(endpoints, func(value []byte, dataType jsonparser.ValueType, offset int, err error) {
 
+		// Get the region
+		region, err := jsonparser.GetString(value, "region")
+		checkErr(err)
+
+		if !inRegionsList[region] {
+			// Skip over this region
+			return
+		}
+
 		// Get the publicurl
 		url, err := jsonparser.GetString(value, "publicurl")
-		check(err)
+		checkErr(err)
 
 		// Get it's service_id
 		service_id, err := jsonparser.GetString(value, "service_id")
-		check(err)
-
-		// Get the region
-		region, err := jsonparser.GetString(value, "region")
-		check(err)
+		checkErr(err)
 
 		// Get the status, given the publicurl, token and tenant_id
 		used_url, status := service_status(url, token, tenant_id)
