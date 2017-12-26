@@ -241,6 +241,44 @@ func get_service_map(services []byte) map[string]string {
 	return service_map
 }
 
+/*
+ * Sort endpoints by region and filtering by the list in .ini file
+ * Returns map w/ region name as key, and an array of endpoint info as values
+ * Each endpoint info is a JSON formatted []byte array:
+ *   - e.g. {
+ *            "publicurl": "http://test-edge-1.savitestbed.ca:9696/",
+ *            "id": "b1c11fdeh3344z72aaf02d0d2a3c238e",
+ *            "enabled": true,
+ *            "region": "EDGE-TEST-1",
+ *            "service_id": "c3z76a9602274w4182117db5e9z458t5",
+ *            "adminurl": "http://99.99.99.10:9696/",
+ *            "internalurl": "http://99.99.99.10:9696/"
+ *          }
+ */
+func get_regional_endpoints(endpoints []byte, in_regions map[string]bool) map[string][][]byte {
+	var REGIONS = get_config_list("REGIONS")
+
+	var regional_endpoints = make(map[string][][]byte)
+	for _, reg := range REGIONS {
+		regional_endpoints[reg] = make([][]byte, 0) // Length/Cap of 0, append will extend it
+	}
+
+	jsonparser.ArrayEach(endpoints, func(value []byte, dataType jsonparser.ValueType, offset int, err error) {
+		// Get the region
+		region, err := jsonparser.GetString(value, "region")
+		checkErr(err)
+
+		if !in_regions[region] {
+			// Skip over this region
+			return
+		}
+
+		regional_endpoints[region] = append(regional_endpoints[region], value)
+	}, "endpoints")
+
+	return regional_endpoints
+}
+
 //Execute REST API
 //Prints output on std.out
 func execute_code(tenant string) {
@@ -262,46 +300,49 @@ func execute_code(tenant string) {
 	// Get output of keystone endpoint-list. Don't care about the status of this call
 	endpoints, _ := get_request(KEYSTONE_GET_ENDPOINT_URL, token, "list")
 
+	// Re-order and filter endpoints
+	reg_endpoints_map := get_regional_endpoints(endpoints, inRegionsList)
+
 	// Get output of keystone service-list. Don't care about the status of this call
 	services, _ := get_request(KEYSTONE_GET_SERVICE_URL, token, "list")
 
-	// Get a service map. Don't care about the status of this call
+	// Create the service map
 	services_map := get_service_map(services)
 
 	// Print Header
 	header := color.New(color.Bold, color.Underline)
-	header.Printf("%10s | %15s | %35s | %90s | %-10s \n", "TENANT", "REGION", "SERVICE DESCRIPTION", "ENDPOINT URL", "STATUS")
+	header.Printf("%10s | %12s | %-35s | %-26s | %-90s \n", "TENANT", "REGION", "SERVICE DESCRIPTION", "STATUS", "ENDPOINT URL")
 
-	// Loop through each row of endpoint-list output
-	jsonparser.ArrayEach(endpoints, func(value []byte, dataType jsonparser.ValueType, offset int, err error) {
-		// Get the region
-		region, err := jsonparser.GetString(value, "region")
-		checkErr(err)
+	// For each region, loop through each endpoint entry
+	for _, reg := range REGIONS {
+		var regional_endpoints = reg_endpoints_map[reg]
 
-		if !inRegionsList[region] {
-			// Skip over this region
-			return
+		for _, endpoint := range regional_endpoints {
+			// Get the publicurl
+			url, err := jsonparser.GetString(endpoint, "publicurl")
+			checkErr(err)
+
+			// Get it's service_id
+			service_id, err := jsonparser.GetString(endpoint, "service_id")
+			checkErr(err)
+
+			// Get the status, given the publicurl, token and tenant_id
+			used_url, status := service_status(url, token, tenant_id)
+
+			// Colourize status
+			// NOTE: Colours add 9 characters with no width
+			//       See width difference in header and data Printf's
+			if strings.HasPrefix(status, "2") {
+				status = color.GreenString(status)
+			} else {
+				status = color.MagentaString(status)
+			}
+
+			fmt.Printf("%10s | %12s | %-35s | %-35s | %-90s \n", tenant, reg, services_map[service_id], status, used_url)
 		}
+	}
 
-		// Get the publicurl
-		url, err := jsonparser.GetString(value, "publicurl")
-		checkErr(err)
-
-		// Get it's service_id
-		service_id, err := jsonparser.GetString(value, "service_id")
-		checkErr(err)
-
-		// Get the status, given the publicurl, token and tenant_id
-		used_url, status := service_status(url, token, tenant_id)
-
-		if strings.HasPrefix(status, "2") {
-			status = color.GreenString(status)
-		} else {
-			status = color.MagentaString(status)
-		}
-		fmt.Printf("%10s | %15s | %35s | %90s | %-10s \n", tenant, region, services_map[service_id], used_url, status)
-
-	}, "endpoints")
+	return
 }
 
 func main() {
