@@ -4,13 +4,15 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"github.com/buger/jsonparser"
-	"github.com/go-ini/ini"
 	"io/ioutil"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/buger/jsonparser"
+	"github.com/fatih/color"
+	"github.com/go-ini/ini"
 )
 
 /* ---------------------------------------------------------------------------------------- */
@@ -177,15 +179,16 @@ func get_request(url string, token string, url_type string) ([]byte, string) {
 	return resp_body, resp.Status
 }
 
-//Function that executes a REST call to a given URL
-//Returns the url used for the query and it's status
+// Function that executes a REST call to a given URL
+// Returns the url used for the query and it's status
 func service_status(url string, token string, tenant_id string) (string, string) {
 
 	//Load config variables
 	var COMPUTE_PORT = get_config_val("COMPUTE_PORT")
 
 	// replace the variables in the url with appropriate values
-	replace_vals := strings.NewReplacer("$(tenant_id)s", tenant_id, "%(tenant_id)s", tenant_id, "$(compute_port)s", COMPUTE_PORT)
+	replace_vals := strings.NewReplacer("$(tenant_id)s", tenant_id, "%(tenant_id)s", tenant_id,
+		"$(project_id)s", tenant_id, "$(compute_port)s", COMPUTE_PORT)
 	url = replace_vals.Replace(url)
 
 	// Make the call
@@ -266,11 +269,11 @@ func execute_code(tenant string) {
 	services_map := get_service_map(services)
 
 	// Print Header
-	fmt.Printf("%10s | %15s | %25s | %90s | %-10s \n", "TENANT", "REGION", "SERVICE DESCRIPTION", "ENDPOINT URL", "STATUS")
+	header := color.New(color.Bold, color.Underline)
+	header.Printf("%10s | %15s | %35s | %90s | %-10s \n", "TENANT", "REGION", "SERVICE DESCRIPTION", "ENDPOINT URL", "STATUS")
 
 	// Loop through each row of endpoint-list output
 	jsonparser.ArrayEach(endpoints, func(value []byte, dataType jsonparser.ValueType, offset int, err error) {
-
 		// Get the region
 		region, err := jsonparser.GetString(value, "region")
 		checkErr(err)
@@ -291,7 +294,12 @@ func execute_code(tenant string) {
 		// Get the status, given the publicurl, token and tenant_id
 		used_url, status := service_status(url, token, tenant_id)
 
-		fmt.Printf("%10s | %15s | %25s | %90s | %-10s \n", tenant, region, services_map[service_id], used_url, status)
+		if strings.HasPrefix(status, "2") {
+			status = color.GreenString(status)
+		} else {
+			status = color.MagentaString(status)
+		}
+		fmt.Printf("%10s | %15s | %35s | %90s | %-10s \n", tenant, region, services_map[service_id], used_url, status)
 
 	}, "endpoints")
 }
