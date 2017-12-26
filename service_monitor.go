@@ -30,6 +30,30 @@ type AuthHeader struct {
 
 /* ---------------------------------------------------------------------------------------- */
 
+/*
+ * Type Query holds everything needed to make a query
+ * TODO: Right now method isn't used since only GET in use
+ */
+type Query struct {
+	url, method    string
+	region, tenant string // Names, not ID
+	tenant_id      string
+	service_id     string
+	service_desc   string // Description, not ID
+}
+
+/*
+ * Type QueryResult holds returned status & message from a query
+ * Should also hold a reference to the original Query object
+ * We don't include token because it's ephemeral
+ * TODO: Right now status is a string, stores both HTTP status + message
+ *       Make status an integer (or new type) and message separately?
+ */
+type QueryResult struct {
+	status, message string
+	query           *Query
+}
+
 // Generic function to check for any errors
 func checkErr(e error) {
 	if e != nil {
@@ -179,22 +203,28 @@ func get_request(url string, token string, url_type string) ([]byte, string) {
 	return resp_body, resp.Status
 }
 
-// Function that executes a REST call to a given URL
-// Returns the url used for the query and it's status
-func service_status(url string, token string, tenant_id string) (string, string) {
+// Function that executes an HTTP call to a given URL
+// Receives output channel in parameters, used to send results of queries
+func service_status(query Query, token string, chOut chan QueryResult) {
 
 	//Load config variables
 	var COMPUTE_PORT = get_config_val("COMPUTE_PORT")
 
 	// replace the variables in the url with appropriate values
-	replace_vals := strings.NewReplacer("$(tenant_id)s", tenant_id, "%(tenant_id)s", tenant_id,
-		"$(project_id)s", tenant_id, "$(compute_port)s", COMPUTE_PORT)
-	url = replace_vals.Replace(url)
+	replace_vals := strings.NewReplacer("$(tenant_id)s", query.tenant_id,
+		"%(tenant_id)s", query.tenant_id,
+		"$(project_id)s", query.tenant_id,
+		"$(compute_port)s", COMPUTE_PORT)
+	query.url = replace_vals.Replace(query.url)
 
 	// Make the call
-	_, status := get_request(url, token, "status")
+	_, status := get_request(query.url, token, "status")
 
-	return url, status
+	var result QueryResult
+	result.query = &query
+	result.status = status
+
+	chOut <- result
 }
 
 /*
@@ -309,11 +339,9 @@ func execute_code(tenant string) {
 	// Create the service map
 	services_map := get_service_map(services)
 
-	// Print Header
-	header := color.New(color.Bold, color.Underline)
-	header.Printf("%10s | %12s | %-35s | %-26s | %-90s \n", "TENANT", "REGION", "SERVICE DESCRIPTION", "STATUS", "ENDPOINT URL")
-
 	// For each region, loop through each endpoint entry
+	var results_chan = make(chan QueryResult)
+	var num_queries = 0
 	for _, reg := range REGIONS {
 		var regional_endpoints = reg_endpoints_map[reg]
 
@@ -326,20 +354,53 @@ func execute_code(tenant string) {
 			service_id, err := jsonparser.GetString(endpoint, "service_id")
 			checkErr(err)
 
-			// Get the status, given the publicurl, token and tenant_id
-			used_url, status := service_status(url, token, tenant_id)
+			var query Query
+			query.url = url
+			query.region = reg
+			query.tenant = tenant
+			query.tenant_id = tenant_id
+			query.service_id = service_id
+			query.service_desc = services_map[service_id]
 
-			// Colourize status
-			// NOTE: Colours add 9 characters with no width
-			//       See width difference in header and data Printf's
-			if strings.HasPrefix(status, "2") {
-				status = color.GreenString(status)
-			} else {
-				status = color.MagentaString(status)
-			}
-
-			fmt.Printf("%10s | %12s | %-35s | %-35s | %-90s \n", tenant, reg, services_map[service_id], status, used_url)
+			// Run each query in separate goroutine
+			go service_status(query, token, results_chan)
+			num_queries++
 		}
+	}
+
+	// Ensure program doesn't hang if a query goroutine dies or takes too long
+	// Close channel after 3 second timeout
+	go func() {
+		time.Sleep(3 * time.Second)
+		close(results_chan)
+	}()
+
+	// Print Header
+	header := color.New(color.Bold, color.Underline)
+	header.Printf("%10s | %12s | %-35s | %-26s | %-90s \n",
+		"TENANT", "REGION", "SERVICE DESCRIPTION", "STATUS", "ENDPOINT URL")
+
+	var query *Query
+	for i := 0; i < num_queries; i++ {
+		result, ok := <-results_chan
+		if !ok {
+			// Channel closed
+			return
+		}
+
+		query = result.query
+
+		// Colourize status
+		// NOTE: Colours add 9 characters with no width
+		//       See width difference in header and data Printf's
+		if strings.HasPrefix(result.status, "2") {
+			result.status = color.GreenString(result.status)
+		} else {
+			result.status = color.MagentaString(result.status)
+		}
+
+		fmt.Printf("%10s | %12s | %-35s | %-35s | %-90s \n",
+			query.tenant, query.region, query.service_desc, result.status, query.url)
 	}
 
 	return
