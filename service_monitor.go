@@ -118,13 +118,12 @@ func get_config_list(key string) []string {
 
 // Function to fetch Token and Tenant ID given admin auth information
 // Returns token and tenant_id
-func get_info(tenant string) (string, string) {
+func get_token(tenant string) (token string, tenant_id string) {
 
 	// Load config variables
 	var USER_NAME = get_config_val("USER_NAME")
 	var PASSWORD = get_config_val("PASSWORD")
 	var KEYSTONE_GET_TOKEN_URL = get_config_val("KEYSTONE_GET_TOKEN_URL")
-	var CONTENT_TYPE = get_config_val("CONTENT_TYPE")
 
 	// Create Auth Body for CURL request
 	auth := AuthHeader{}
@@ -137,25 +136,23 @@ func get_info(tenant string) (string, string) {
 	json.NewEncoder(auth_bytes).Encode(auth)
 
 	// Make the POST call
-	resp, err := http.Post(KEYSTONE_GET_TOKEN_URL, CONTENT_TYPE, auth_bytes)
+	resp, err := http.Post(KEYSTONE_GET_TOKEN_URL, "application/json", auth_bytes)
 	checkErr(err)
+	defer resp.Body.Close()
 
 	// Store it as string
 	body, err := ioutil.ReadAll(resp.Body)
 	checkErr(err)
 
 	// Get token
-	token, err := jsonparser.GetString(body, "access", "token", "id")
+	token, err = jsonparser.GetString(body, "access", "token", "id")
 	checkErr(err)
 
 	// Get Tenant ID
-	tenant_id, err := jsonparser.GetString(body, "access", "token", "tenant", "id")
+	tenant_id, err = jsonparser.GetString(body, "access", "token", "tenant", "id")
 	checkErr(err)
 
-	defer resp.Body.Close()
-
 	return token, tenant_id
-
 }
 
 //Function that executes a GET REST call to a given URL
@@ -214,6 +211,7 @@ func service_status(query Query, token string, chOut chan QueryResult) {
 	replace_vals := strings.NewReplacer("$(tenant_id)s", query.tenant_id,
 		"%(tenant_id)s", query.tenant_id,
 		"$(project_id)s", query.tenant_id,
+		"%(project_id)s", query.tenant_id,
 		"$(compute_port)s", COMPUTE_PORT)
 	query.url = replace_vals.Replace(query.url)
 
@@ -248,7 +246,6 @@ func service_status(query Query, token string, chOut chan QueryResult) {
 */
 func get_service_map(services []byte) map[string]string {
 
-	var SERVICE_JSON_OBJECT = get_config_val("SERVICE_JSON_OBJECT")
 	// Initialize the string map
 	service_map := make(map[string]string)
 
@@ -266,7 +263,7 @@ func get_service_map(services []byte) map[string]string {
 		// Create entry in map
 		service_map[service_id] = service_description
 
-	}, SERVICE_JSON_OBJECT)
+	}, "services")
 
 	return service_map
 }
@@ -325,7 +322,7 @@ func execute_code(tenant string) {
 	}
 
 	// Get token and tenant_id, given the tenant name
-	token, tenant_id := get_info(tenant)
+	token, tenant_id := get_token(tenant)
 
 	// Get output of keystone endpoint-list. Don't care about the status of this call
 	endpoints, _ := get_request(KEYSTONE_GET_ENDPOINT_URL, token, "list")
@@ -347,7 +344,7 @@ func execute_code(tenant string) {
 
 		for _, endpoint := range regional_endpoints {
 			// Get the publicurl
-			url, err := jsonparser.GetString(endpoint, "publicurl")
+			url, err := jsonparser.GetString(endpoint, "url")
 			checkErr(err)
 
 			// Get it's service_id
