@@ -181,11 +181,11 @@ func get_request(url string, token string, url_type string) ([]byte, string) {
 			var err_string string
 
 			if strings.Contains(err.Error(), "connection refused") {
-				err_string = "500: Connection Refused"
+				err_string = "500 Connection Refused"
 			} else if strings.Contains(err.Error(), "Timeout") {
-				err_string = "500: Connection Timeout"
+				err_string = "500 Connection Timeout"
 			} else {
-				err_string = "500: " + err.Error()
+				err_string = "500 " + err.Error()
 			}
 
 			return nil, err_string
@@ -392,8 +392,10 @@ func execute_code(tenant string) {
 		//       See width difference in header and data Printf's
 		if strings.HasPrefix(result.status, "2") {
 			result.status = color.GreenString(result.status)
+		} else if strings.HasPrefix(result.status, "3") {
+			result.status = color.YellowString(result.status)
 		} else {
-			result.status = color.MagentaString(result.status)
+			result.status = color.HiRedString(result.status)
 		}
 
 		fmt.Printf("%10s | %12s | %-35s | %-35s | %-90s \n",
