@@ -15,6 +15,32 @@ import (
 	"github.com/go-ini/ini"
 )
 
+var (
+	REGIONS    []string
+	TENANTS    []string
+	INTERFACES []string
+)
+
+func inRegions(region string) bool {
+	for _, reg := range REGIONS {
+		if reg == region {
+			return true
+		}
+	}
+
+	return false
+}
+
+func inInterfaces(interf string) bool {
+	for _, iface := range INTERFACES {
+		if iface == interf {
+			return true
+		}
+	}
+
+	return false
+}
+
 /* ---------------------------------------------------------------------------------------- */
 // Authentication header used for POST call to fetch token and tenant_id
 // Need to create json object: {"auth": {"tenantName": "xxx", "passwordCredentials": {"username": "xxx", "password": "xxx"}}}
@@ -282,7 +308,7 @@ func get_service_map(services []byte) map[string]string {
  *            "internalurl": "http://99.99.99.10:9696/"
  *          }
  */
-func get_regional_endpoints(endpoints []byte, in_regions map[string]bool) map[string][][]byte {
+func get_regional_endpoints(endpoints []byte) map[string][][]byte {
 	var REGIONS = get_config_list("REGIONS")
 
 	var regional_endpoints = make(map[string][][]byte)
@@ -291,11 +317,14 @@ func get_regional_endpoints(endpoints []byte, in_regions map[string]bool) map[st
 	}
 
 	jsonparser.ArrayEach(endpoints, func(value []byte, dataType jsonparser.ValueType, offset int, err error) {
-		// Get the region
+		// Get the region and interface type
 		region, err := jsonparser.GetString(value, "region")
 		checkErr(err)
 
-		if !in_regions[region] {
+		interf, err := jsonparser.GetString(value, "interface")
+		checkErr(err)
+
+		if !inRegions(region) || !inInterfaces(interf) {
 			// Skip over this region
 			return
 		}
@@ -315,12 +344,6 @@ func execute_code(tenant string) {
 	var KEYSTONE_GET_SERVICE_URL = get_config_val("KEYSTONE_GET_SERVICE_URL")
 	var REGIONS = get_config_list("REGIONS")
 
-	// Construct map object for list of regions, enables quick membership check
-	var inRegionsList = make(map[string]bool)
-	for _, reg := range REGIONS {
-		inRegionsList[reg] = true
-	}
-
 	// Get token and tenant_id, given the tenant name
 	token, tenant_id := get_token(tenant)
 
@@ -328,7 +351,7 @@ func execute_code(tenant string) {
 	endpoints, _ := get_request(KEYSTONE_GET_ENDPOINT_URL, token, "list")
 
 	// Re-order and filter endpoints
-	reg_endpoints_map := get_regional_endpoints(endpoints, inRegionsList)
+	reg_endpoints_map := get_regional_endpoints(endpoints)
 
 	// Get output of keystone service-list. Don't care about the status of this call
 	services, _ := get_request(KEYSTONE_GET_SERVICE_URL, token, "list")
@@ -408,9 +431,16 @@ func execute_code(tenant string) {
 func main() {
 
 	//Load config variable and split the string into a List (Delimiter: ",")
-	TENANTS := strings.Split(get_config_val("TENANTS"), ",")
+	REGIONS = get_config_list("REGIONS")
+	TENANTS = get_config_list("TENANTS")
+	INTERFACES = get_config_list("INTERFACES")
 
-	for _, element := range TENANTS {
-		execute_code(element)
+	for {
+		for _, element := range TENANTS {
+			execute_code(element)
+		}
+
+		time.Sleep(time.Second * 10) // TODO: Make interval configurable
+		fmt.Println()
 	}
 }
