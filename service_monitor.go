@@ -13,12 +13,18 @@ import (
 	"github.com/buger/jsonparser"
 	"github.com/fatih/color"
 	"github.com/go-ini/ini"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 var (
 	REGIONS    []string
 	TENANTS    []string
 	INTERFACES []string
+
+	svcCountVec *prometheus.CounterVec
 )
 
 func inRegions(region string) bool {
@@ -66,6 +72,7 @@ type Query struct {
 	tenant_id      string
 	service_id     string
 	service_desc   string // Description, not ID
+	interf         string // Interface type
 }
 
 /*
@@ -366,16 +373,21 @@ func execute_code(tenant string) {
 		var regional_endpoints = reg_endpoints_map[reg]
 
 		for _, endpoint := range regional_endpoints {
-			// Get the publicurl
+			// Get its interface type and url
+			interf, err := jsonparser.GetString(endpoint, "interface")
+			checkErr(err)
+
+			// Get its url
 			url, err := jsonparser.GetString(endpoint, "url")
 			checkErr(err)
 
-			// Get it's service_id
+			// Get its service_id
 			service_id, err := jsonparser.GetString(endpoint, "service_id")
 			checkErr(err)
 
 			var query Query
 			query.url = url
+			query.interf = interf
 			query.region = reg
 			query.tenant = tenant
 			query.tenant_id = tenant_id
@@ -410,12 +422,17 @@ func execute_code(tenant string) {
 
 		query = result.query
 
+		// Update Prom metrics
+		statusCode := strings.Fields(result.status)[0]
+		svcCount := svcCountVec.WithLabelValues(query.service_desc, query.region, query.interf, statusCode)
+		svcCount.Inc()
+
 		// Colourize status
 		// NOTE: Colours add 9 characters with no width
 		//       See width difference in header and data Printf's
-		if strings.HasPrefix(result.status, "2") {
+		if strings.HasPrefix(statusCode, "2") {
 			result.status = color.GreenString(result.status)
-		} else if strings.HasPrefix(result.status, "3") {
+		} else if strings.HasPrefix(statusCode, "3") {
 			result.status = color.YellowString(result.status)
 		} else {
 			result.status = color.HiRedString(result.status)
@@ -429,6 +446,23 @@ func execute_code(tenant string) {
 }
 
 func main() {
+	// Set up Prom counters
+	svcCountVec = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "service_api",
+			Help: "APIs of OpenStack services",
+		},
+		[]string{
+			"service",   // Service name
+			"region",    // Region name
+			"interface", // Interface type
+			"status",    // Status code
+		},
+	)
+
+	// Start Prometheus handler
+	http.Handle("/metrics", promhttp.Handler())
+	go http.ListenAndServe(":8888", nil)
 
 	//Load config variable and split the string into a List (Delimiter: ",")
 	REGIONS = get_config_list("REGIONS")
