@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -18,6 +19,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
+
+func init() {
+	log.SetFlags(log.Ldate | log.Lmicroseconds | log.Lshortfile)
+}
 
 var (
 	REGIONS    []string
@@ -172,6 +177,11 @@ func get_token(tenant string) (token string, tenant_id string) {
 	resp, err := http.Post(KEYSTONE_GET_TOKEN_URL, "application/json", auth_bytes)
 	checkErr(err)
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("Getting token failed with status: %s\n", resp.Status)
+		return "", ""
+	}
 
 	// Store it as string
 	body, err := ioutil.ReadAll(resp.Body)
@@ -353,6 +363,10 @@ func execute_code(tenant string) {
 
 	// Get token and tenant_id, given the tenant name
 	token, tenant_id := get_token(tenant)
+	if token == "" || tenant_id == "" {
+		log.Printf("Aborting queries for tenant %s\n", tenant)
+		return
+	}
 
 	// Get output of keystone endpoint-list. Don't care about the status of this call
 	endpoints, _ := get_request(KEYSTONE_GET_ENDPOINT_URL, token, "list")
