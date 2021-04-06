@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -175,7 +176,10 @@ func get_token(tenant string) (token string, tenant_id string) {
 
 	// Make the POST call
 	resp, err := http.Post(KEYSTONE_GET_TOKEN_URL, "application/json", auth_bytes)
-	checkErr(err)
+	if err != nil {
+		log.Printf("POST to %s returned error: %v\n", KEYSTONE_GET_TOKEN_URL, err)
+		return "", ""
+	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
@@ -202,21 +206,24 @@ func get_token(tenant string) (token string, tenant_id string) {
 //The last paramter (url_type) is to differentiate between fetching lists/services and getting status of url
 //We perform this in order to handle errors differently for these scenarios
 //Returns: response and it's status (i.e. 200, 500 etc.)
-func get_request(url string, token string, url_type string) ([]byte, string) {
+func get_request(url_path string, token string, url_type string) ([]byte, string) {
 
 	client := &http.Client{
 		Timeout: 2 * time.Second, // Cause I don't have the patience
 	}
 
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequest("GET", url_path, nil)
 	checkErr(err)
 
 	req.Header.Add("X-Auth-Token", token)
 	resp, err := client.Do(req)
 
 	//If the request was to fetch endpoint list or service list, check for errors
-	if url_type == "list" {
-		checkErr(err)
+	if url_type == "list" && err != nil {
+		// If the error isn't timeout related, raise an exception so we can check logs
+		if e, ok := err.(*url.Error); ok && !e.Timeout() {
+			checkErr(err)
+		}
 	} else {
 		// Handle error differently for this case.
 		// You don't want to panic and shutdown for a connection timeout
